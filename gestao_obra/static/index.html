@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Painel de Obras</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --txt:#1d2430; --mut:#6b7280; --borda:#e5e7eb;
+          --azul:#2563eb; --verde:#16a34a; --vermelho:#dc2626; --laranja:#d97706; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f141b; --card:#18202b; --txt:#e6e9ef; --mut:#9aa4b2; --borda:#2a3442; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--txt); }
+  header { padding:16px; border-bottom:1px solid var(--borda); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0 auto 0 0; }
+  main { max-width:1100px; margin:auto; padding:16px; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--borda); border-radius:10px; padding:16px; overflow-x:auto; }
+  .obras { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  .obra { cursor:pointer; } .obra.sel { outline:2px solid var(--azul); }
+  .big { font-size:28px; font-weight:700; }
+  .ok { color:var(--verde); } .ruim { color:var(--vermelho); } .mut { color:var(--mut); font-size:13px; }
+  table { width:100%; border-collapse:collapse; } td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--borda); white-space:nowrap; }
+  .barra { position:relative; height:10px; background:var(--borda); border-radius:5px; min-width:120px; }
+  .barra i { position:absolute; inset:0 auto 0 0; background:var(--azul); border-radius:5px; }
+  .barra b { position:absolute; top:-3px; width:2px; height:16px; background:var(--txt); }
+  .alerta { padding:8px 10px; border-left:4px solid var(--laranja); margin:6px 0; background:var(--bg); }
+  .alerta.critico { border-color:var(--vermelho); }
+  button { font:inherit; padding:6px 12px; border-radius:6px; border:1px solid var(--borda); background:var(--card); color:var(--txt); cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gestão de obra no automático</h1>
+  <button onclick="rotina('diaria')">Rodar rotina diária</button>
+  <button onclick="rotina('relatorio-semanal')">Gerar relatório semanal</button>
+</header>
+<main>
+  <section class="obras" id="obras"></section>
+  <section class="card"><h2 id="tituloObra">Etapas</h2><table id="etapas"></table></section>
+  <section class="card"><h2>Alertas e decisões pendentes</h2><div id="alertas"></div></section>
+  <section class="card"><h2>Cotações</h2><table id="cotacoes"></table></section>
+  <section class="card"><h2>Diário de obra</h2><table id="diario"></table></section>
+</main>
+<script>
+const brl = v => (v ?? 0).toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+const dt = s => s ? s.split('-').reverse().slice(0,2).join('/') : '—';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let obraSel = null;
+
+async function api(url, opt) { const r = await fetch(url, opt); return r.json(); }
+
+async function carregar() {
+  const obras = await api('/obras');
+  obraSel ??= obras[0]?.id;
+  document.getElementById('obras').innerHTML = obras.map(o => `
+    <div class="card obra ${o.id === obraSel ? 'sel' : ''}" onclick="obraSel=${o.id};carregar()">
+      <div>${esc(o.nome)}</div>
+      <div class="big ${o.atraso_dias > 2 ? 'ruim' : 'ok'}">${o.avanco.toFixed(0)}%</div>
+      <div class="mut">${o.atraso_dias > 0 ? `+${o.atraso_dias} dias de atraso` : 'no prazo'}</div>
+    </div>`).join('');
+  if (!obraSel) return;
+
+  const [obra, alertas, cotacoes, diario] = await Promise.all([
+    api(`/obras/${obraSel}`), api(`/alertas?obra_id=${obraSel}`), api('/cotacoes'), api(`/obras/${obraSel}/diario?limite=15`)]);
+
+  document.getElementById('tituloObra').textContent = `Etapas — ${obra.nome}`;
+  document.getElementById('etapas').innerHTML = `<tr><th>Etapa</th><th>Real × previsto</th><th>Fim plan.</th><th>Fim proj.</th><th>Atraso</th><th>Gasto / orçado</th></tr>` +
+    obra.etapas.map(e => `<tr>
+      <td>${esc(e.nome)}</td>
+      <td><div class="barra" title="${e.percentual}% real, ${e.previsto_hoje}% previsto"><i style="width:${e.percentual}%"></i><b style="left:${e.previsto_hoje}%"></b></div></td>
+      <td>${dt(e.fim_previsto)}</td><td>${dt(e.fim_projetado)}</td>
+      <td class="${e.atraso_dias > 2 ? 'ruim' : ''}">${e.atraso_dias ? '+' + e.atraso_dias + 'd' : '—'}</td>
+      <td class="${(e.desvio_custo ?? -1) >= 0.05 ? 'ruim' : ''}">${brl(e.gasto)} / ${brl(e.orcamento)}</td></tr>`).join('');
+
+  document.getElementById('alertas').innerHTML = alertas.length ? alertas.map(a => `
+    <div class="alerta ${a.severidade}"><span class="mut">[${a.agente}]</span> ${esc(a.mensagem)}
+      <button onclick="resolver(${a.id})">resolver</button></div>`).join('') : '<p class="mut">Nenhum alerta aberto.</p>';
+
+  const cots = cotacoes.filter(c => c.obra_id === obraSel);
+  document.getElementById('cotacoes').innerHTML = cots.length ? `<tr><th>#</th><th>Etapa</th><th>Itens</th><th>Respostas</th><th>Status</th></tr>` +
+    cots.map(c => `<tr><td>${c.id}</td><td>${esc(c.etapa)}</td>
+      <td>${c.itens.map(i => `${i.quantidade} ${esc(i.unidade)} ${esc(i.material)}`).join('<br>')}</td>
+      <td>${c.respostas.map(r => `${r.escolhida ? '✔ ' : ''}${esc(r.fornecedor)}: ${r.valor_total ? brl(r.valor_total) : 'aguardando'}`).join('<br>')}</td>
+      <td>${c.status}</td></tr>`).join('') : '<tr><td class="mut">Nenhuma cotação.</td></tr>';
+
+  document.getElementById('diario').innerHTML = diario.length ? `<tr><th>Data</th><th>Etapa</th><th>Feito</th><th>Equipe</th><th>Travou</th></tr>` +
+    diario.map(d => `<tr><td>${dt(d.data)}</td><td>${esc(d.etapa ?? '—')}</td><td>${esc(d.feito)}</td><td>${d.equipe ?? '—'}</td><td class="ruim">${esc(d.travou ?? '')}</td></tr>`).join('')
+    : '<tr><td class="mut">Sem registros.</td></tr>';
+}
+
+async function resolver(id) { await api(`/alertas/${id}/resolver`, {method:'POST'}); carregar(); }
+async function rotina(nome) { await api(`/rotinas/${nome}`, {method:'POST'}); carregar(); }
+carregar();
+</script>
+</body>
+</html>
